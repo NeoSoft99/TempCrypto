@@ -249,3 +249,87 @@ namespace SaltSignatures
         }
     }
 }
+
+
+// Grouped/parameterized regex strings for detecting BouncyCastle IV/nonce usage.
+// This defines (a) parameter arrays and (b) minimal template regex strings,
+// then (c) fills RegexStrings via foreach loops by replacing placeholders.
+//
+// NOTE: This produces *strings only* (no Regex objects) and compiles as-is.
+
+using System.Collections.Generic;
+
+namespace BcIvScannerRegex
+{
+    public static class RegexStringCatalog
+    {
+        // ---- Parameters (edit these lists, not the regex templates) ----
+        public static readonly string[] IvParamClasses = { "ParametersWithIV" };
+        public static readonly string[] AeadParamClasses = { "AeadParameters" };
+        public static readonly string[] IvModeBlockCipherClasses = { "CbcBlockCipher", "CfbBlockCipher", "OfbBlockCipher", "SicBlockCipher" };
+        public static readonly string[] AeadBlockCipherClasses = { "GcmBlockCipher", "CcmBlockCipher", "EaxBlockCipher" };
+        public static readonly string[] StreamEngineClasses = { "ChaChaEngine", "ChaCha7539Engine", "Salsa20Engine" };
+        public static readonly string[] PbeGeneratorClasses = { "Pkcs12ParametersGenerator", "Pkcs5S2ParametersGenerator", "OpenSslPbeParametersGenerator" };
+        public static readonly string[] CipherUtilityModes = { "CBC", "CFB", "OFB", "CTR", "SIC", "GCM", "EAX", "CCM" }; // mode-only; algorithm-agnostic
+
+        // ---- Output collection of ready-to-use regex *strings* ----
+        public static readonly List<string> RegexStrings = new List<string>();
+
+        // ---- Template regex (placeholders get replaced) ----
+        private const string NewClassTemplate = @"\bnew\s+{ClassName}\s*\(";
+        private const string InitWithParamTemplate = @"\.Init\s*\(\s*(?:true|false)\s*,\s*new\s+{ParamClass}\s*\(";
+        private const string ParamsWithRandomTemplate = @"\bnew\s+ParametersWithRandom\s*\(\s*new\s+{ParamClass}\s*\(";
+        private const string TightParamWithKeyParamTemplate = @"\b{ParamClass}\s*\(\s*new\s+KeyParameter\b";
+        private const string PbeTemplate = @"\bnew\s+{PbeClass}\s*\([^)]*\)\s*\.GenerateDerivedParameters\s*\(\s*(?:""[^""]+""\s*,\s*)?\d+\s*,\s*\d+\s*\)";
+        private const string CipherUtilitiesByModeTemplate = @"CipherUtilities\.GetCipher\(\s*""[^""]*/{Mode}(?:/[^""]*)?""\s*\)";
+
+        // ---- Build concrete regex strings using foreach loops ----
+        static RegexStringCatalog()
+        {
+            // 1) Direct creation of IV/nonce-bearing parameter objects + Init(...) usages
+            foreach (var pc in IvParamClasses)
+            {
+                RegexStrings.Add(NewClassTemplate.Replace("{ClassName}", pc));                  // new ParametersWithIV(
+                RegexStrings.Add(InitWithParamTemplate.Replace("{ParamClass}", pc));            // .Init(..., new ParametersWithIV(
+                RegexStrings.Add(ParamsWithRandomTemplate.Replace("{ParamClass}", pc));         // new ParametersWithRandom(new ParametersWithIV(
+                RegexStrings.Add(TightParamWithKeyParamTemplate.Replace("{ParamClass}", pc));   // ParametersWithIV(new KeyParameter
+            }
+            foreach (var pc in AeadParamClasses)
+            {
+                RegexStrings.Add(NewClassTemplate.Replace("{ClassName}", pc));                  // new AeadParameters(
+                RegexStrings.Add(InitWithParamTemplate.Replace("{ParamClass}", pc));            // .Init(..., new AeadParameters(
+                RegexStrings.Add(TightParamWithKeyParamTemplate.Replace("{ParamClass}", pc));   // AeadParameters(new KeyParameter
+            }
+
+            // 2) Explicit block mode classes that imply IV use
+            foreach (var cls in IvModeBlockCipherClasses)
+            {
+                RegexStrings.Add(NewClassTemplate.Replace("{ClassName}", cls));                 // new Cbc/Cfb/Ofb/SicBlockCipher(
+            }
+
+            // 3) AEAD block mode classes (nonce-based IV)
+            foreach (var cls in AeadBlockCipherClasses)
+            {
+                RegexStrings.Add(NewClassTemplate.Replace("{ClassName}", cls));                 // new Gcm/Ccm/EaxBlockCipher(
+            }
+
+            // 4) Stream engines that use ParametersWithIV for nonces
+            foreach (var cls in StreamEngineClasses)
+            {
+                RegexStrings.Add(NewClassTemplate.Replace("{ClassName}", cls));                 // new ChaCha*/Salsa20Engine(
+            }
+
+            // 5) PBE generators that return ParametersWithIV (two-size overloads)
+            foreach (var pbe in PbeGeneratorClasses)
+            {
+                RegexStrings.Add(PbeTemplate.Replace("{PbeClass}", pbe));                       // new *Pbe*Generator(...).GenerateDerivedParameters(..., keyBits, ivBits)
+            }
+
+            // 6) CipherUtilities.GetCipher(...) with IV/nonce-relevant modes (algorithm-agnostic)
+            foreach (var mode in CipherUtilityModes)
+            {
+                RegexStrings.Add(CipherUtilitiesByModeTemplate.Replace("{Mode}", mode));        // CipherUtilities.GetCipher("*/CBC/*"), etc.
+            }
+        }
+    }
+}
